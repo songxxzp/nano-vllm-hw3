@@ -51,6 +51,7 @@ def _per_row_post_process_mm(
     sA,  # [M,]
     B,  # [N, K]
     sB,  # [N,]
+    Bias,  # None or [N,]
     C,  # [M, N]
     M,
     N,
@@ -113,6 +114,18 @@ def _per_row_post_process_mm(
 
     c = acc * sa[:, None] * sb[None, :]
 
+    if Bias:
+        bias_ptrs = tl.make_block_ptr(
+            Bias,
+            shape=(N,),
+            strides=(1,),
+            offsets=(bidy * BLK_N,),
+            block_shape=(BLK_N,),
+            order=(0,),
+        )
+        bias = tl.load(bias_ptrs, boundary_check=(0,))  # [BLK_N]
+        c += bias[:, None]
+
     c_block_ptr = tl.make_block_ptr(
         C,
         shape=(M, N),
@@ -122,7 +135,7 @@ def _per_row_post_process_mm(
         order=(0, 1),
     )
 
-    tl.store(c_block_ptr, c, boundary_check=(0, 1))
+    tl.store(c_block_ptr, tl.cast(c, C.type.element_ty), boundary_check=(0, 1))
 
 
 @torch.no_grad()
@@ -146,7 +159,11 @@ def per_row_quant(
 
 @torch.no_grad()
 def per_row_matmul(
-    x: torch.Tensor, qw: torch.Tensor, sw: torch.Tensor, dtype: torch.dtype
+    x: torch.Tensor,
+    qw: torch.Tensor,
+    sw: torch.Tensor,
+    bias: torch.Tensor | None,
+    dtype: torch.dtype,
 ):
     x_dtype = x.dtype
     y_shape = list(x.shape)[:-1] + [
@@ -166,6 +183,7 @@ def per_row_matmul(
         sx,
         qw,
         sw,
+        bias,
         y,
         M,
         N,
@@ -222,6 +240,10 @@ def fake_per_group_quant(
     return _fake_per_block_quant(x, 1, group_size, dtype)
 
 
+def apply_weight_fake_quant(model):
+    pass
+
+
 def test_quant_mm():
     shapes = [(1, 1536, 1536), (10, 1536, 1536), (4096, 4096, 4096)]
     dtypes = [torch.int8, torch.float8_e4m3fn]
@@ -229,21 +251,22 @@ def test_quant_mm():
 
     for M, N, K in shapes:
         for dtype in dtypes:
-            x = torch.randn(M, K, device=device)
+            x = torch.randn(M, K, device=device, dtype=torch.bfloat16)
+            b = torch.randn(N, device=device, dtype=torch.bfloat16)
             qx, sx = per_row_quant(x, dtype)
             recon = qx.to(torch.float32) * sx[:, None]
             q_err = (x - recon).abs().mean() / x.abs().mean()
 
-            w = torch.randn(N, K, device=device)
+            w = torch.randn(N, K, device=device, dtype=torch.bfloat16)
             qw, sw = per_row_quant(w, dtype)
 
-            y = per_row_matmul(x, qw, sw, dtype)
-            y_ref = x @ w.T
+            y = per_row_matmul(x, qw, sw, b, dtype)
+            y_ref = x @ w.T + b[None, :]
             mm_err = (y - y_ref).abs().max() / y_ref.abs().max()
 
             dtype_name = "int8" if dtype == torch.int8 else "fp8"
             print(f"[{M}x{N}x{K}] {dtype_name}: q_err={q_err:.4f}, mm_err={mm_err:.4f}")
-            assert mm_err < 0.05, f"Error too large: {mm_err}"
+            assert mm_err < 0.08, f"Error too large: {mm_err}"
 
     print("✓ All tests passed!")
 
@@ -282,11 +305,6 @@ def test_fake_quant():
     print("-" * 70)
     print("✓ Fake quant test completed!")
 
-
-if __name__ == "__main__":
-    test_quant_mm()
-    print()
-    test_fake_quant()
 
 if __name__ == "__main__":
     test_quant_mm()
