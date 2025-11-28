@@ -1,5 +1,8 @@
 import os
 from dataclasses import dataclass
+from typing import Callable
+
+import torch
 from transformers import AutoConfig
 
 
@@ -16,11 +19,15 @@ class Config:
     eos: int = -1
     kvcache_block_size: int = 256
     num_kvcache_blocks: int = -1
+    linear_dtype: torch.dtype = torch.bfloat16
+    weight_quant_fn: Callable[[torch.Tensor], torch.Tensor] | None = None
 
     def __post_init__(self):
         assert os.path.isdir(self.model)
         assert self.kvcache_block_size % 256 == 0
         assert 1 <= self.tensor_parallel_size <= 8
         self.hf_config = AutoConfig.from_pretrained(self.model)
-        self.max_model_len = min(self.max_model_len, self.hf_config.max_position_embeddings)
+        self.max_model_len = min(
+            self.max_model_len, self.hf_config.max_position_embeddings
+        )
         assert self.max_num_batched_tokens >= self.max_model_len

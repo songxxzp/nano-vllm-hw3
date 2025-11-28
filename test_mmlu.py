@@ -2,6 +2,7 @@ import os
 import random
 import time
 
+import torch
 from datasets import load_dataset
 
 from nanovllm import LLM, SamplingParams
@@ -19,13 +20,13 @@ def format_example(question, choices, answer):
 def main():
     # 加载模型
     path = os.path.expanduser("./Qwen3-1.7B/")
-    llm = LLM(path, enforce_eager=False, max_model_len=4096)
+    llm = LLM(path, enforce_eager=False, max_model_len=4096, linear_dtype=torch.int8)
 
     # 加载 MMLU 数据集
     dataset = list(load_dataset("cais/mmlu", "all", split="test"))
     random.seed(42)
     random.shuffle(dataset)
-    dataset = dataset[:500]
+    dataset = dataset[:1000]
     dev_dataset = load_dataset("cais/mmlu", "all", split="dev")
 
     # 构建 5-shot prompts

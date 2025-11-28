@@ -3,6 +3,10 @@ import triton
 import triton.language as tl
 from triton.language.extra import libdevice
 
+from nanovllm.layers.linear import LinearBase
+from nanovllm.llm import LLM
+from nanovllm.models.qwen3 import Qwen3DecoderLayer, Qwen3ForCausalLM
+
 
 @triton.heuristics(values={"PAD_H": lambda args: triton.next_power_of_2(args["H"])})
 @triton.jit
@@ -196,6 +200,23 @@ def per_row_matmul(
     return y
 
 
+class QLinear(torch.nn.Module):
+    def __init__(self, dtype, weight: torch.Tensor, bias: torch.Tensor | None):
+        super().__init__()
+        assert dtype in [torch.float8_e4m3fn, torch.int8]
+        self.dtype = dtype
+        self.qw, self.sw = per_row_quant(weight, dtype)
+        self.bias = bias
+
+    @classmethod
+    def from_linear(cls, other: LinearBase, dtype):
+        assert other.tp_size == 1, "Not support TP."
+        return cls(dtype, other.weight, other.bias)
+
+    def forward(self, x: torch.Tensor):
+        return per_row_matmul(x, self.qw, self.sw, self.bias, self.dtype)
+
+
 @torch.no_grad()
 def _fake_per_block_quant(x: torch.Tensor, blk_m: int, blk_n: int, dtype: torch.dtype):
     assert dtype in [torch.float8_e4m3fn, torch.int8]
@@ -240,8 +261,30 @@ def fake_per_group_quant(
     return _fake_per_block_quant(x, 1, group_size, dtype)
 
 
-def apply_weight_fake_quant(model):
-    pass
+def apply_weight_fake_quant(model: Qwen3ForCausalLM, weight_fake_quant_fn: lambda x: x):
+    for l in model.model.layers:
+        l: Qwen3DecoderLayer
+        l.self_attn.qkv_proj.weight.data = weight_fake_quant_fn(
+            l.self_attn.qkv_proj.weight.data
+        )
+        l.self_attn.o_proj.weight.data = weight_fake_quant_fn(
+            l.self_attn.o_proj.weight.data
+        )
+        l.mlp.gate_up_proj.weight.data = weight_fake_quant_fn(
+            l.mlp.gate_up_proj.weight.data
+        )
+        l.mlp.down_proj.weight.data = weight_fake_quant_fn(l.mlp.down_proj.weight.data)
+
+
+def apply_per_row_quant(model: Qwen3ForCausalLM, dtype):
+    for l in model.model.layers:
+        l: Qwen3DecoderLayer
+        l.self_attn.qkv_proj = QLinear.from_linear(l.self_attn.qkv_proj, dtype)
+        l.self_attn.o_proj = QLinear.from_linear(l.self_attn.o_proj, dtype)
+        l.mlp.gate_up_proj = QLinear.from_linear(l.mlp.gate_up_proj, dtype)
+        l.mlp.down_proj = QLinear.from_linear(l.mlp.down_proj, dtype)
+
+    torch.cuda.empty_cache()
 
 
 def test_quant_mm():
