@@ -22,6 +22,7 @@ def main():
     torch.set_default_device("cuda")
     model = Qwen3ForCausalLM(hf_config, simple_attention=True)
     load_model(model, path)
+
     model.eval()
     torch.set_default_device("cpu")
     torch.set_default_dtype(default_dtype)

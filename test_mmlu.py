@@ -20,7 +20,7 @@ def format_example(question, choices, answer):
 def main():
     # 加载模型
     path = os.path.expanduser("./Qwen3-1.7B/")
-    llm = LLM(path, enforce_eager=False, max_model_len=4096, linear_dtype=torch.int8)
+    llm = LLM(path, enforce_eager=False, max_model_len=4096)
 
     # 加载 MMLU 数据集
     dataset = list(load_dataset("cais/mmlu", "all", split="test"))
