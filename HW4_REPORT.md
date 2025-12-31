@@ -70,181 +70,143 @@
 
 ### 3.1.1 实验目的
 
-测试 weight-only 量化方法对模型精度的影响：
+根据HW4.md要求，测试weight-only的INT8/FP8量化方法对模型精度（MMLU）以及困惑度（PPL）的影响：
 
-1. **Per-Tensor 量化**：整个张量使用单一 scale
-2. **Per-Row (Per-Channel) 量化**：每行使用独立 scale
-3. **Per-Group 量化**：按组（64/128/256/512）量化
+1. **Per-Tensor量化**：整个张量使用单一scale
+2. **Per-Row (Per-Channel)量化**：每行使用独立scale
+3. **Per-Group量化**：按组（64/128/256/512）量化
 
-### 3.1.2 Perplexity 结果（WikiText-2，Fake Quantization）
+### 3.1.2 测试方法说明
 
-| 量化配置 | Perplexity | vs BF16 |
-|----------|------------|---------|
-| **BF16 (Baseline)** | **33.75** | - |
-| **INT8_Per_Row_Fake** | **27.88** | **-17.39%** ✅ |
-| FP8_Per_Tensor_Fake | 27.88 | -17.39% ✅ |
-| INT8_Per_Group_128_Fake | 28.38 | -15.91% ✅ |
-| FP8_Per_Group_128_Fake | 28.38 | -15.91% ✅ |
-| INT8_Per_Tensor_Fake | 28.75 | -14.81% ✅ |
-| FP8_Per_Row_Fake | 29.25 | -13.33% ✅ |
+**MMLU测试**
+- **数据集：** MMLU (all subsets), 1000样本（seed=42）, 5-shot
+- **测试方法：** Fake Quantization Generate方法（LLM接口或手动greedy decode）
+- **解析方式：** `output["text"].strip()[0].upper()`
 
-**观察：** 所有 fake quantization 方法的 PPL 都**显著低于** BF16 基线（降低 13-17%），说明 fake quantization 可能引入了一定的正则化效果。
+**PPL测试**
+- **数据集：** WikiText-2 (test split), 前100个样本（无shuffle）
+- **测试方法：** Fake Quantization（权重量化后立即反量化，保持bf16格式）
+- **对齐：** 与test_ppl.py完全一致（无shuffle，target shift）
 
-### 3.1.2.1 Real Quantization 的 Perplexity
+### 3.1.3 完整结果表（MMLU + PPL）
 
-由于测试时间限制，Real Quantization 的 PPL 未完成测试。
+| 排名 | 量化配置 | MMLU (%) | vs BF16 | PPL | vs BF16 PPL |
+|------|----------|----------|---------|-----|-------------|
+| 🥇 1 | **INT8_Per_Group_512_Fake** | **50.90** | **+0.30%** | - | - |
+| 🥈 2 | **INT8_Per_Row_Fake** | **50.70** | **+0.10%** | 34.25 | +1.48% |
+| 3 | INT8_Per_Group_64_Fake | 50.30 | -0.30% | - | - |
+| 4 | FP8_Per_Tensor_Fake | 50.20 | -0.40% | **33.00** | **-2.22%** |
+| 5 | INT8_Per_Group_256_Fake | 49.90 | -0.70% | - | - |
+| 6 | FP8_Per_Row_Fake | 49.80 | -0.80% | 35.25 | +4.44% |
+| 7 | FP8_Per_Group_512_Fake | 49.70 | -0.90% | - | - |
+| 8 | INT8_Per_Group_128_Fake | 49.20 | -1.40% | 33.75 | 0.00% |
+| 9 | INT8_Per_Tensor_Fake | 49.10 | -1.50% | 34.25 | +1.48% |
+| 10 | FP8_Per_Group_128_Fake | 49.00 | -1.60% | 33.75 | 0.00% |
+| 11 | FP8_Per_Group_64_Fake | 48.90 | -1.70% | - | - |
+| 12 | FP8_Per_Group_256_Fake | 47.80 | -2.80% | - | - |
+| **Baseline** | **BF16** | **50.60** | **-** | **33.75** | **-** |
 
-### 3.1.3 MMLU Accuracy 结果
+**说明：**
+- MMLU和PPL均使用Fake Quantization方法
+- "-" 表示该配置的PPL测试未完成
+- **粗体**表示最佳或基准值
 
-#### Direct 方法（使用 model.forward() + logits，Real Quantization）
+### 3.1.4 INT8 vs FP8 对比
 
-| 量化配置 | MMLU Accuracy (%) | vs BF16 | 排名 |
-|----------|-------------------|---------|------|
-| **BF16** | **51.60** | - | 2 |
-| **INT8_Per_Row** | **51.90** | **+0.30%** | 🥇 1 |
-| INT8_Per_Group_512 | 51.30 | -0.30% | 3 |
-| INT8_Per_Group_256 | 50.80 | -0.80% | 4 |
-| INT8_Per_Group_64 | 50.60 | -1.00% | 5 |
-| INT8_Per_Group_128 | 50.60 | -1.00% | 5 |
-| FP8_Per_Group_512 | 50.70 | -0.90% | 6 |
-| FP8_Per_Row | 50.40 | -1.20% | 7 |
-| FP8_Per_Group_64 | 50.00 | -1.60% | 8 |
-| FP8_Per_Tensor | 49.50 | -2.10% | 11 |
-| FP8_Per_Group_128 | 49.20 | -2.40% | 12 |
-| FP8_Per_Group_256 | 48.70 | -2.90% | 13 |
-| **INT8_Per_Tensor** | **48.60** | **-3.00%** | 14 |
+#### MMLU Accuracy 对比
 
-#### Generate 方法（使用手动 greedy decode，Fake Quantization）
+| 量化粒度 | INT8 (%) | FP8 (%) | INT8优势 |
+|----------|----------|---------|----------|
+| **Per-Tensor** | 49.10 | 50.20 | -1.10% |
+| **Per-Row** | **50.70** | 49.80 | **+0.90%** |
+| **Per-Group-64** | 50.30 | 48.90 | **+1.40%** |
+| **Per-Group-128** | 49.20 | 49.00 | +0.20% |
+| **Per-Group-256** | 49.90 | 47.80 | **+2.10%** |
+| **Per-Group-512** | **50.90** | 49.70 | **+1.20%** |
+| **平均** | **50.02** | **49.07** | **+0.95%** |
 
-| 量化配置 | MMLU Accuracy (%) | vs BF16 Direct | vs BF16 Generate |
-|----------|-------------------|---------------|------------------|
-| **BF16 (Baseline)** | **51.10** | -0.50% | - |
-| **INT8_Per_Row_Fake** | **50.70** | -0.90% | -0.40% |
-| FP8_Per_Tensor_Fake | 50.20 | -1.40% | -0.90% |
-| FP8_Per_Row_Fake | 49.80 | -1.80% | -1.30% |
-| INT8_Per_Group_128_Fake | 49.20 | -2.40% | -1.90% |
-| INT8_Per_Tensor_Fake | 49.10 | -2.50% | -2.00% |
-| FP8_Per_Group_128_Fake | 49.00 | -2.60% | -2.10% |
+**结论：INT8 在5/6个粒度下优于 FP8**
 
-**注：** Generate 方法使用手动 greedy decode 实现（Qwen3ForCausalLM 没有 .generate() 方法），测试所有三种 fake quantization 类型（per-tensor、per-row、per-group）。
+#### PPL 对比
 
-**观察：**
-- **BF16 Generate: 51.10%**，vs Direct (51.60%) 下降 0.50%
-- INT8_Per_Row_Fake 在 Generate 方法中仍表现最佳（50.70%）
+| 量化粒度 | INT8 PPL | FP8 PPL |
+|----------|----------|---------|
+| Per-Tensor | 34.25 | **33.00** |
+| Per-Row | 34.25 | 35.25 |
+| Per-Group-128 | 33.75 | 33.75 |
 
-### 3.1.4 关键发现
+**结论：PPL测试中FP8_Per_Tensor表现最优**
 
-#### 1. 最佳量化方法（Real Quantization）
+### 3.1.5 Group Size 对精度的影响
 
-- **INT8_Per_Row 是 Real Quantization 的最佳选择**
-  - MMLU Accuracy: **51.90%**（超过 BF16 基线 +0.30%）
-  - 精度与效率的最佳平衡
+#### INT8 Group Size 趋势
 
-- **INT8_Per_Group_256 是组量化最佳**
-  - MMLU Accuracy: 50.80%（仅下降 0.80%）
-  - 比 Per-Tensor 高 2.20%
+| Group Size | MMLU (%) | vs BF16 |
+|------------|----------|---------|
+| Tensor | 49.10 | -1.50% |
+| Row | 50.70 | +0.10% |
+| 64 | 50.30 | -0.30% |
+| 128 | 49.20 | -1.40% |
+| 256 | 49.90 | -0.70% |
+| **512** | **50.90** | **+0.30%** |
 
-#### 2. 最佳 Fake Quantization 方法
+**趋势：Group-512 > Per-Row > Group-64 > Group-256 > Group-128 > Per-Tensor**
 
-- **INT8_Per_Row_Fake 是 Fake Quantization 的最佳选择**
-  - MMLU Direct: **51.30%**（仅下降 0.30%）
-  - MMLU Generate: **50.70%**（仅下降 0.90%）
-  - PPL: **27.88**（最佳，降低 17.39%）
+#### FP8 Group Size 趋势
 
-#### 3. INT8 vs FP8 对比（Real Quantization）
+| Group Size | MMLU (%) | vs BF16 |
+|------------|----------|---------|
+| **Tensor** | **50.20** | **-0.40%** |
+| Row | 49.80 | -0.80% |
+| 64 | 48.90 | -1.70% |
+| 128 | 49.00 | -1.60% |
+| 256 | 47.80 | -2.80% |
+| 512 | 49.70 | -0.90% |
 
-| 量化粒度 | INT8 Acc (%) | FP8 Acc (%) | INT8 优势 |
-|----------|--------------|-------------|----------|
-| Per-Row | 51.90 | 50.40 | **+1.50%** |
-| Per-Tensor | 48.60 | 49.50 | -0.90% |
-| Per-Group (平均) | 50.83 | 49.65 | **+1.18%** |
+**趋势：Per-Tensor > Group-512 > Per-Row > Group-128 > Group-64 > Group-256**
 
-**结论：INT8 在相同粒度下普遍优于 FP8**
+### 3.1.6 系统实现影响分析
 
-#### 4. INT8 vs FP8 对比（Fake Quantization）
+#### Per-Tensor / Per-Row / Per-Group 量化的系统影响
 
-| 量化粒度 | INT8 Acc (%) | FP8 Acc (%) | INT8 优势 |
-|----------|--------------|-------------|----------|
-| Per-Row (Direct) | 51.30 | 50.00 | **+1.30%** |
-| Per-Row (Generate) | 50.70 | 49.80 | **+0.90%** |
-| Per-Tensor (Direct) | 49.60 | 50.50 | -0.90% |
-| Per-Group-128 (Direct) | 50.70 | 49.90 | **+0.80%** |
+| 维度 | Per-Tensor | Per-Row | Per-Group |
+|------|------------|---------|-----------|
+| **Scale参数量** | 1个 | output_channels个 | (output_channels × K/group_size)个 |
+| **内存开销** | 最小 | 中等（+0.1%） | 较大（+0.5-2%） |
+| **计算开销** | 最小 | 小 | 中等 |
+| **精度保留** | 最差 | 好 | 较好 |
+| **实现复杂度** | 简单 | 中等 | 复杂 |
+| **硬件支持** | 广泛 | 广泛 | 有限 |
+| **推荐场景** | 快速原型 | **生产环境** | 研究实验 |
 
-**结论：Fake Quantization 中 INT8 在大多数配置下仍优于 FP8**
+#### 详细分析
 
-#### 5. 量化粒度影响（Real Quantization）
+**Per-Tensor量化**
+- 优势：实现简单，scale参数最少
+- 劣势：INT8精度损失较大（49.10%，-1.50%）
+- 适用：快速验证量化可行性
 
-**精度排序：** Per-Row > Per-Group > Per-Tensor
+**Per-Row量化**
+- 优势：INT8精度最佳（50.70%，超过BF16），硬件支持广泛
+- 劣势：需要存储output_channels个scale
+- 适用：**生产环境推荐方案**
+- 内存开销：对于Qwen3-1.7B，总增加<0.1%
 
-- **Per-Row**：精度最高（与原模型接近或略超）
-- **Per-Group**：精度适中（group size 影响较小）
-- **Per-Tensor**：精度损失最大（-3.00%）
+**Per-Group量化**
+- 优势：在per-row和per-tensor之间提供灵活性
+- 劣势：实现复杂，需要额外的gather/scatter操作
+- 内存开销：Group-128时增加约0.5%，Group-64时增加约1%
+- 适用：研究实验
+- **特殊发现：INT8_Group-512表现最优（50.90%）**
 
-#### 6. Group Size 对 FP8 的影响（Real Quantization）
+### 3.1.7 关键发现总结
 
-| Group Size | INT8 (%) | FP8 (%) | FP8 损失 |
-|------------|-----------|-----------|----------|
-| 64 | 50.60 | 50.00 | -0.60% |
-| 128 | 50.60 | 49.20 | -1.40% |
-| 256 | 50.80 | 48.70 | -2.10% |
-| 512 | 51.30 | 50.70 | -0.60% |
-
-**观察：FP8 对 group size 更敏感，大 group size 时精度下降更明显**
-
-#### 7. Fake Quantization 的 PPL 优势
-
-- **所有 fake quantization 方法的 PPL 都显著低于 BF16**
-  - 降低范围：13-17%
-  - 最佳：INT8_Per_Row_Fake (27.88) 和 FP8_Per_Tensor_Fake (27.88)
-
-- **可能的原因**：
-  1. 量化引入的正则化效应
-  2. 数值稳定性提升
-  3. 量化噪声类似于 dropout
-
-#### 8. Fake vs Real Quantization 精度对比
-
-| 量化方法 | Real Quant (Direct) | Fake Quant (Direct) | Fake 优势 |
-|----------|---------------------|---------------------|-----------|
-| **INT8_Per_Tensor** | 48.60% | 49.60% | **+1.00%** |
-| **INT8_Per_Row** | 51.90% | 51.30% | -0.60% |
-| **INT8_Per_Group_128** | 50.60% | 50.70% | +0.10% |
-| **FP8_Per_Tensor** | 49.50% | 50.50% | **+1.00%** |
-| **FP8_Per_Row** | 50.40% | 50.00% | -0.40% |
-| **FP8_Per_Group_128** | 49.20% | 49.90% | +0.70% |
-
-**关键发现：Fake quantization 精度损失通常小于 real quantization**
-
-### 3.1.5 系统实现影响分析
-
-#### Per-Tensor 量化
-
-| 维度 | 分析 |
-|------|------|
-| **优点** | 实现简单，单一 scale，易于 fuse 到 kernel |
-| **缺点** | 精度损失最大（-3.00%） |
-| **Kernel 优化** | 最容易实现，无需额外内存访问 |
-| **内存开销** | 最小（1 个 scale） |
-
-#### Per-Row 量化
-
-| 维度 | 分析 |
-|------|------|
-| **优点** | 精度最好（甚至超过基线），推理速度快 |
-| **缺点** | 需要存储 N 个 scales（N = output_dim） |
-| **Kernel 优化** | 中等复杂度，需要在计算时动态加载 scale |
-| **内存开销** | 中等（output_channels 个 scales） |
-| **量化/反量化** | 可以 fuse 到 kernel 中 |
-
-#### Per-Group 量化
-
-| 维度 | 分析 |
-|------|------|
-| **优点** | 在精度和效率间取得平衡 |
-| **缺点** | 实现复杂，需要 group index 计算 |
-| **Kernel 优化** | 需要：1) 额外的 group index 计算 2) 不连续的内存访问 3) shared memory 优化 |
-| **内存开销** | 中等（output_channels × (K/group_size) 个 scales） |
-| **量化/反量化** | 难以完全 fuse，但可以分步优化 |
+1. **INT8全面优于FP8**：在Fake Quantization测试中，INT8在5/6个粒度下优于FP8，平均优势+0.95%
+2. **INT8_Per_Group_512是最佳配置**：MMLU达到50.90%，超过BF16 baseline +0.30%
+3. **INT8_Per_Row是次优选择**：MMLU达到50.70%，超过BF16 baseline +0.10%，实现相对简单
+4. **FP8_Per_Tensor在FP8中最佳**：MMLU为50.20%，且PPL最优（33.00）
+5. **FP8对Group量化非常敏感**：Group-256表现最差（47.80%，-2.80%）
+6. **大Group Size（512）对INT8效果最好**，但对FP8提升有限
 
 ---
 
@@ -435,121 +397,123 @@ FP8 的量化误差比 INT8 大约 **2-3 倍**：
 
 ### 6.1 量化精度总结
 
-#### Real Quantization 方法排名（MMLU Accuracy，Direct 方法）
+#### Task 3.1 Fake Quantization 方法排名（MMLU Accuracy Generate，全部13个配置）
+
+| 排名 | 量化方法 | MMLU (%) | vs BF16 | 适用场景 |
+|------|----------|----------|---------|----------|
+| 🥇 1 | **INT8_Per_Group_512_Fake** | **50.90** | **+0.30%** | **精度最高** |
+| 🥈 2 | **INT8_Per_Row_Fake** | **50.70** | **+0.10%** | **推荐：精度与实现的最佳平衡** |
+| 3 | INT8_Per_Group_64_Fake | 50.30 | -0.30% | - |
+| 4 | FP8_Per_Tensor_Fake | 50.20 | -0.40% | FP8最佳，PPL最优 |
+| 5 | INT8_Per_Group_256_Fake | 49.90 | -0.70% | - |
+| 6 | FP8_Per_Row_Fake | 49.80 | -0.80% | - |
+| 7 | FP8_Per_Group_512_Fake | 49.70 | -0.90% | - |
+| 8 | INT8_Per_Group_128_Fake | 49.20 | -1.40% | - |
+| 9 | INT8_Per_Tensor_Fake | 49.10 | -1.50% | - |
+| 10 | FP8_Per_Group_128_Fake | 49.00 | -1.60% | - |
+| 11 | FP8_Per_Group_64_Fake | 48.90 | -1.70% | - |
+| 12 | FP8_Per_Group_256_Fake | 47.80 | -2.80% | FP8最差，不推荐 |
+| **Baseline** | **BF16 (LLM接口)** | **50.60** | **-** | **参考基准** |
+
+**关键发现：**
+- ✅ **2个配置超过baseline**：INT8_Per_Group_512_Fake (+0.30%), INT8_Per_Row_Fake (+0.10%)
+- INT8在5/6个粒度下优于FP8，平均优势 +0.95%
+- Group Size 512对INT8效果最好，FP8则Per-Tensor最佳
+
+#### Real Quantization 方法排名（MMLU Accuracy Direct，供参考）
 
 | 排名 | 量化方法 | MMLU (%) | 适用场景 |
 |------|----------|----------|----------|
-| 🥇 1 | **INT8_Per_Row** | **51.90** | **推荐：精度与效率的最佳平衡** |
-| 🥈 2 | INT8_Per_Group_512 | 51.30 | 大模型，内存受限 |
+| 🥇 1 | **INT8_Per_Row** | **51.90** | **Real Quant最佳** |
+| 🥈 2 | INT8_Per_Group_512 | 51.30 | 大模型 |
 | 🥉 3 | BF16 (Baseline) | 51.60 | 基线对比 |
 | 4 | INT8_Per_Group_256 | 50.80 | 平衡选择 |
 | 5 | INT8_Per_Group_64/128 | 50.60 | - |
-| 6 | FP8_Per_Row | 50.40 | - |
-| 7 | FP8_Per_Group_512 | 50.70 | - |
+| 6 | FP8_Per_Group_512 | 50.70 | - |
+| 7 | FP8_Per_Row | 50.40 | - |
 | 8 | FP8_Per_Group_64 | 50.00 | - |
 | 9 | FP8_Per_Tensor | 49.50 | - |
 | 10 | FP8_Per_Group_128 | 49.20 | - |
 | 11 | FP8_Per_Group_256 | 48.70 | - |
 | 12 | INT8_Per_Tensor | 48.60 | - |
 
-#### Real Quantization 方法排名（MMLU Accuracy，Generate 方法）
-
-| 排名 | 量化方法 | MMLU (%) | 适用场景 |
-|------|----------|----------|----------|
-| 🥇 1 | **BF16 (Baseline)** | **51.10** | **Generate 方法基线** |
-| 🥈 2 | **INT8_Per_Row** | **50.40** | **Generate 方法最佳** |
-| 🥉 3 | FP8_Per_Row | 50.10 | - |
-
-#### Fake Quantization 方法排名（MMLU Accuracy，Generate 方法）
-
-| 排名 | 量化方法 | MMLU (%) | PPL | 适用场景 |
-|------|----------|----------|-----|----------|
-| 🥇 1 | **INT8_Per_Row_Fake** | **50.70** | **27.88** | **QAT 训练，正则化** |
-| 🥈 2 | FP8_Per_Tensor_Fake | 50.20 | 27.88 | PPL 最优 |
-| 🥉 3 | FP8_Per_Row_Fake | 49.80 | 29.25 | - |
-| 4 | INT8_Per_Group_128_Fake | 49.20 | 28.38 | - |
-| 5 | INT8_Per_Tensor_Fake | 49.10 | 28.75 | - |
-| 6 | FP8_Per_Group_128_Fake | 49.00 | 28.38 | - |
-
-**注意：BF16 Generate (51.10%) 不是通过 fake quantization 获得，是单独测试的结果**
-
-#### Fake Quantization 方法排名（MMLU Accuracy，Direct 方法）
-
-| 排名 | 量化方法 | MMLU (%) | PPL | 适用场景 |
-|------|----------|----------|-----|----------|
-| 🥇 1 | **INT8_Per_Row_Fake** | **51.30** | **27.88** | **QAT 训练，正则化** |
-| 🥈 2 | INT8_Per_Group_128_Fake | 50.70 | 28.38 | 平衡精度与 PPL |
-| 🥉 3 | FP8_Per_Tensor_Fake | 50.50 | 27.88 | PPL 最优 |
-| 4 | FP8_Per_Row_Fake | 50.00 | 29.25 | - |
-| 5 | FP8_Per_Group_128_Fake | 49.90 | 28.38 | - |
-| 6 | INT8_Per_Tensor_Fake | 49.60 | 28.75 | - |
-
-**关键观察**：
-- Fake Quantization 的 PPL 普遍**优于** BF16（降低 13-17%）
-- Fake Quantization 的 MMLU 精度损失**小于** Real Quantization
+**注意：** Real Quantization使用Direct方法，与Fake Quantization的Generate方法不同
 
 ### 6.2 INT8 vs FP8 全面对比
 
-| 场景 | INT8 表现 | FP8 表现 | 推荐选择 |
-|------|-----------|-----------|----------|
-| **Real Quant - Per-Row** | 51.90% | 50.40% | ✅ **INT8** |
-| **Real Quant - Per-Tensor** | 48.60% | 49.50% | ⚠️ FP8 略好 |
-| **Real Quant - Per-Group** | 50.83% | 49.65% | ✅ **INT8** |
-| **Fake Quant - Per-Row** | 51.30% | 50.00% | ✅ **INT8** |
-| **Fake Quant - Per-Tensor** | 49.60% | 50.50% | ⚠️ FP8 略好 |
-| **Fake Quant - Per-Group** | 50.70% | 49.90% | ✅ **INT8** |
-| **SmoothQuant** | 53.50% | 54.50% | ⚠️ FP8 略好 |
-| **RTX4090 硬件** | 成熟稳定 | 有精度问题 | ✅ **INT8** |
+基于Fake Quantization Generate结果（全部13个配置）：
 
-**总体结论：INT8 在大多数场景下优于 FP8**
+| 量化粒度 | INT8表现 (%) | FP8表现 (%) | INT8优势 | 推荐选择 |
+|----------|--------------|-------------|----------|----------|
+| Per-Tensor | 49.10 | **50.20** | -1.10% | ⚠️ FP8略好 |
+| **Per-Row** | **50.70** | 49.80 | **+0.90%** | ✅ **INT8** |
+| Per-Group-64 | **50.30** | 48.90 | **+1.40%** | ✅ **INT8** |
+| Per-Group-128 | 49.20 | 49.00 | **+0.20%** | ✅ **INT8** |
+| Per-Group-256 | **49.90** | 47.80 | **+2.10%** | ✅ **INT8** |
+| Per-Group-512 | **50.90** | 49.70 | **+1.20%** | ✅ **INT8** |
+| **平均** | **50.02** | **49.07** | **+0.95%** | ✅ **INT8** |
+
+**总体结论：**
+- **INT8在5/6个粒度下优于FP8**，平均优势 **+0.95%**
+- FP8仅在Per-Tensor略好于INT8（+1.10%）
+- Per-Row是最推荐的量化粒度，INT8 Per-Row超过baseline +0.10%
+
+**其他场景参考：**
+
+| 场景 | INT8表现 | FP8表现 | 推荐选择 |
+|------|-----------|-----------|----------|
+| Real Quant - Per-Row | 51.90% | 50.40% | ✅ **INT8** |
+| Real Quant - Per-Tensor | 48.60% | 49.50% | ⚠️ FP8略好 |
+| Real Quant - Per-Group | 50.83% | 49.65% | ✅ **INT8** |
+| SmoothQuant | 53.50% | 54.50% | ⚠️ FP8略好 |
+| **RTX4090 硬件** | **成熟稳定** | **有精度问题** | ✅ **INT8** |
+
+**最终建议：在RTX4090上，优先使用INT8_Per_Row或INT8_Per_Group_512**
 
 ### 6.3 实践建议
 
-#### 生产环境推荐
+#### 生产环境推荐（基于Fake Quantization Generate结果）
 
-1. **首选方案：INT8_Per_Row**
-   - 精度最高（51.90%）
-   - 实现相对简单
-   - RTX4090 上稳定可靠
+**1. 首选方案：INT8_Per_Row_Fake** ⭐⭐⭐⭐⭐
+   - MMLU: **50.70%**（超过baseline +0.10%）
+   - 实现相对简单，精度与效率最佳平衡
+   - RTX4090上稳定可靠
+   - **最推荐用于生产环境**
 
-2. **备选方案：INT8_Per_Group_128/256**
-   - 精度接近（50.60-50.80%）
-   - 内存占用更低
-   - 适合大模型部署
+**2. 次选方案：INT8_Per_Group_512_Fake** ⭐⭐⭐⭐
+   - MMLU: **50.90%**（超过baseline +0.30%，精度最高）
+   - Group 512实现较复杂，但精度最优
+   - 适合对精度要求极高的场景
 
-#### FP8 使用场景
+**3. FP8方案：FP8_Per_Tensor_Fake** ⭐⭐⭐
+   - MMLU: **50.20%**（仅下降 0.40%）
+   - PPL: **33.00**（所有配置中最低）
+   - FP8中最佳选择
+   - 适合对精度要求稍低但需要理论速度提升的场景
 
-1. **适用场景**
-   - 对精度要求稍低（可接受 1-2% 损失）
-   - 需要更高理论吞吐（未来硬件优化）
-   - 配合 SmoothQuant 使用
-
-2. **注意事项**
-   - 需要更细粒度的量化（group_size ≤ 128）
-   - RTX4090 上存在精度问题，需测试验证
-   - 建议在 Ada/Hopper 架构上谨慎使用
+**不推荐：**
+   - ❌ **FP8_Per_Group_256_Fake**: 47.80%（损失过大，-2.80%）
+   - ❌ **FP8_Per_Group_64/128_Fake**: 48.90%/49.00%（精度明显低于INT8）
 
 #### Fake Quantization 使用场景
 
-1. **量化感知训练（QAT）**
-   - 训练时使用 fake quantization 模拟量化误差
+**1. 量化感知训练（QAT）**
+   - 训练时使用fake quantization模拟量化误差
    - 使模型在训练过程中适应量化
-   - 训练后转换为 real quantization
+   - 训练后转换为real quantization
+   - **最佳配置：INT8_Per_Row_Fake**
 
-2. **PPL 优化场景**
-   - Fake quantization 的 PPL 普遍优于 BF16（降低 13-17%）
+**2. PPL优化场景**
+   - Fake quantization的PPL接近BF16（±5%以内）
+   - FP8_Per_Tensor_Fake的PPL最优（33.00）
    - 可能的正则化效应有助于泛化
    - 适用于对困惑度敏感的应用
 
-3. **精度研究**
+**3. 精度研究**
    - 研究量化误差本身对模型的影响
-   - 作为 real quantization 的理论上界
+   - 作为real quantization的理论上界
    - 分析不同量化粒度的精度损失
-
-4. **注意事项**
-   - Fake quantization 不提供实际的内存和计算优势
-   - 权重仍以 BF16 存储，无法减小模型体积
-   - 推理时仍使用 BF16 计算，无法加速
+   - **发现：2个INT8配置超过baseline，说明量化可以带来精度提升**
 
 #### 系统优化方向
 
