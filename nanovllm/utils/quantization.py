@@ -7,6 +7,8 @@ from nanovllm.layers.linear import LinearBase
 from nanovllm.llm import LLM
 from nanovllm.models.qwen3 import Qwen3DecoderLayer, Qwen3ForCausalLM
 
+from torchao.quantization import quantize_, Int8DynamicActivationInt8WeightConfig, Float8DynamicActivationFloat8WeightConfig
+
 
 @triton.heuristics(values={"PAD_H": lambda args: triton.next_power_of_2(args["H"])})
 @triton.jit
@@ -509,6 +511,17 @@ def apply_weight_quant(model: Qwen3ForCausalLM, quant_fn):
         l.self_attn.o_proj.weight.data = quant_fn(l.self_attn.o_proj.weight.data)
         l.mlp.gate_up_proj.weight.data = quant_fn(l.mlp.gate_up_proj.weight.data)
         l.mlp.down_proj.weight.data = quant_fn(l.mlp.down_proj.weight.data)
+
+
+def apply_quant_torchao(model, linear_dtype=torch.float8_e4m3fn):
+    if linear_dtype == torch.int8:
+        print("Applying Int8DynamicActivationInt8WeightConfig...")
+        quantize_(model, Int8DynamicActivationInt8WeightConfig())
+    elif linear_dtype == torch.float8_e4m3fn:
+        print("Applying Float8DynamicActivationFloat8WeightConfig...")
+        quantize_(model, Float8DynamicActivationFloat8WeightConfig())
+    else:
+        raise ValueError(f"Unknown linear_dtype: {linear_dtype}")
 
 
 def test_quant_mm():

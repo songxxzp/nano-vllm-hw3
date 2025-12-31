@@ -191,6 +191,7 @@ def wikitext(args, linear_dtype, quant_type, weight_quant_fn, results_manager):
         if quant_type == "per_tensor":
             apply_tensor_quant(model, linear_dtype)
         elif quant_type == "per_row":
+            from nanovllm.utils.quantization import apply_per_row_quant
             apply_per_row_quant(model, linear_dtype)
         elif quant_type == "per_group":
             apply_group_quant(model, linear_dtype, args.group_size)

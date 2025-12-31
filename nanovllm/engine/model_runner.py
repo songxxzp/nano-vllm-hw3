@@ -35,13 +35,14 @@ class ModelRunner:
 
         # Apply weight quantization if configured
         if config.weight_quant_fn is not None:
-            from nanovllm.utils.quantization import apply_weight_quant
-            apply_weight_quant(self.model, config.weight_quant_fn)
+            from nanovllm.utils.quantization import apply_weight_fake_quant
+            apply_weight_fake_quant(self.model, config.weight_quant_fn)
         elif config.quant_type is not None:
             from nanovllm.utils.quantization import (
                 apply_tensor_quant,
                 apply_per_row_quant,
                 apply_group_quant,
+                apply_quant_torchao,
             )
             if config.quant_type == "per_tensor":
                 apply_tensor_quant(self.model, config.linear_dtype)
@@ -49,6 +50,8 @@ class ModelRunner:
                 apply_per_row_quant(self.model, config.linear_dtype)
             elif config.quant_type == "per_group":
                 apply_group_quant(self.model, config.linear_dtype, config.group_size)
+            elif config.quant_type == "smoothquant":
+                apply_quant_torchao(self.model, config.linear_dtype)
         elif config.linear_dtype != torch.bfloat16:
             from nanovllm.utils.quantization import apply_per_row_quant
             apply_per_row_quant(self.model, config.linear_dtype)

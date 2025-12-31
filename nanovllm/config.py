@@ -21,6 +21,8 @@ class Config:
     num_kvcache_blocks: int = -1
     linear_dtype: torch.dtype = torch.bfloat16
     weight_quant_fn: Callable[[torch.Tensor], torch.Tensor] | None = None
+    quant_type: str = None  # "per_tensor", "per_row", "per_group"
+    group_size: int = 128  # for per_group quantization
 
     def __post_init__(self):
         assert os.path.isdir(self.model)
