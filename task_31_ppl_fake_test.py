@@ -25,11 +25,11 @@ from nanovllm.utils.quantization import (
 
 
 def compute_ppl(model, tokenizer, num_samples=100):
-    """计算 WikiText-2 Perplexity"""
+    """计算 WikiText-2 Perplexity，与test_ppl.py对齐"""
     print("计算 WikiText-2 Perplexity...")
     dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
-    random.seed(42)
-    dataset = dataset.shuffle(seed=42).select(range(min(num_samples, len(dataset))))
+    # 直接取前num_samples个，不shuffle（与test_ppl.py对齐）
+    texts = dataset["text"][:num_samples]
 
     total_loss = 0.0
     total_tokens = 0
@@ -37,12 +37,11 @@ def compute_ppl(model, tokenizer, num_samples=100):
 
     model.eval()
     with torch.no_grad():
-        for example in dataset:
-            text = example["text"]
-            if not text or len(text.strip()) < 10:
+        for text in texts:
+            if len(text.strip()) == 0:
                 continue
 
-            # Tokenize without special tokens
+            # Tokenize without special tokens（与test_ppl.py对齐）
             tokens = tokenizer.encode(text, add_special_tokens=False)
             if len(tokens) < 2:
                 continue
@@ -79,10 +78,15 @@ def compute_ppl(model, tokenizer, num_samples=100):
 
 def main():
     model_path = "/root/Qwen3-1.7B"
-    config_name = sys.argv[1] if len(sys.argv) > 1 else "INT8_Per_Tensor_Fake"
+    config_name = sys.argv[1] if len(sys.argv) > 1 else "BF16"
 
     # 量化配置映射
     quant_configs = {
+        "BF16": {
+            "quant_type": None,
+            "use_llm": True,  # BF16使用LLM接口
+            "fake_quant": None
+        },
         "INT8_Per_Tensor_Fake": {
             "quant_type": "per_tensor",
             "linear_dtype": torch.int8,
@@ -95,11 +99,29 @@ def main():
             "group_size": None,
             "fake_quant": lambda x: fake_per_row_quant(x, torch.int8)
         },
+        "INT8_Per_Group_64_Fake": {
+            "quant_type": "per_group",
+            "linear_dtype": torch.int8,
+            "group_size": 64,
+            "fake_quant": lambda x: fake_per_group_quant(x, 64, torch.int8)
+        },
         "INT8_Per_Group_128_Fake": {
             "quant_type": "per_group",
             "linear_dtype": torch.int8,
             "group_size": 128,
             "fake_quant": lambda x: fake_per_group_quant(x, 128, torch.int8)
+        },
+        "INT8_Per_Group_256_Fake": {
+            "quant_type": "per_group",
+            "linear_dtype": torch.int8,
+            "group_size": 256,
+            "fake_quant": lambda x: fake_per_group_quant(x, 256, torch.int8)
+        },
+        "INT8_Per_Group_512_Fake": {
+            "quant_type": "per_group",
+            "linear_dtype": torch.int8,
+            "group_size": 512,
+            "fake_quant": lambda x: fake_per_group_quant(x, 512, torch.int8)
         },
         "FP8_Per_Tensor_Fake": {
             "quant_type": "per_tensor",
@@ -113,11 +135,29 @@ def main():
             "group_size": None,
             "fake_quant": lambda x: fake_per_row_quant(x, torch.float8_e4m3fn)
         },
+        "FP8_Per_Group_64_Fake": {
+            "quant_type": "per_group",
+            "linear_dtype": torch.float8_e4m3fn,
+            "group_size": 64,
+            "fake_quant": lambda x: fake_per_group_quant(x, 64, torch.float8_e4m3fn)
+        },
         "FP8_Per_Group_128_Fake": {
             "quant_type": "per_group",
             "linear_dtype": torch.float8_e4m3fn,
             "group_size": 128,
             "fake_quant": lambda x: fake_per_group_quant(x, 128, torch.float8_e4m3fn)
+        },
+        "FP8_Per_Group_256_Fake": {
+            "quant_type": "per_group",
+            "linear_dtype": torch.float8_e4m3fn,
+            "group_size": 256,
+            "fake_quant": lambda x: fake_per_group_quant(x, 256, torch.float8_e4m3fn)
+        },
+        "FP8_Per_Group_512_Fake": {
+            "quant_type": "per_group",
+            "linear_dtype": torch.float8_e4m3fn,
+            "group_size": 512,
+            "fake_quant": lambda x: fake_per_group_quant(x, 512, torch.float8_e4m3fn)
         },
     }
 
@@ -127,8 +167,6 @@ def main():
     if config is None:
         print(f"Unknown config: {config_name}")
         sys.exit(1)
-
-    fake_quant_fn = config["fake_quant"]
 
     print("Loading model...")
     tokenizer = AutoTokenizer.from_pretrained(model_path)
@@ -153,8 +191,9 @@ def main():
 
     # 应用伪量化
     print(f"Applying fake quantization: {config_name}")
-    apply_weight_fake_quant(model, fake_quant_fn)
-    print(f"Applied fake {config['quant_type']} quantization with dtype={config['linear_dtype']}")
+    if config["quant_type"] is not None:
+        apply_weight_fake_quant(model, config["fake_quant"])
+        print(f"Applied fake {config['quant_type']} quantization with dtype={config['linear_dtype']}")
 
     model.eval()
     ppl = compute_ppl(model, tokenizer, num_samples=100)

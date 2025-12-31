@@ -10,14 +10,21 @@ import sys
 os.environ["PYTHONPATH"] = "/datadisk/workspace/Quant/nano-vllm-hw3:" + os.environ.get("PYTHONPATH", "")
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
-# 测试配置
+# 测试配置（13个配置）
 configs = [
+    "BF16",
     "INT8_Per_Tensor_Fake",
     "INT8_Per_Row_Fake",
+    "INT8_Per_Group_64_Fake",
     "INT8_Per_Group_128_Fake",
+    "INT8_Per_Group_256_Fake",
+    "INT8_Per_Group_512_Fake",
     "FP8_Per_Tensor_Fake",
     "FP8_Per_Row_Fake",
+    "FP8_Per_Group_64_Fake",
     "FP8_Per_Group_128_Fake",
+    "FP8_Per_Group_256_Fake",
+    "FP8_Per_Group_512_Fake",
 ]
 
 def run_command(cmd, description):
@@ -54,29 +61,18 @@ def main():
     print("="*80)
 
     for config in configs:
-        cmd = f"conda run -n torch python task_31_ppl_fake_test.py {config}"
+        cmd = f"python task_31_ppl_fake_test.py {config}"
         description = f"PPL Test - {config}"
-        if not run_command(cmd, description):
-            all_success = False
-
-    # 运行 MMLU 测试 (Direct 方法)
-    print("\n" + "="*80)
-    print("PHASE 2: Running MMLU Tests (Direct Method)")
-    print("="*80)
-
-    for config in configs:
-        cmd = f"conda run -n torch python task_31_mmlu_fake_test.py {config} direct"
-        description = f"MMLU Direct Test - {config}"
         if not run_command(cmd, description):
             all_success = False
 
     # 运行 MMLU 测试 (Generate 方法)
     print("\n" + "="*80)
-    print("PHASE 3: Running MMLU Tests (Generate Method)")
+    print("PHASE 2: Running MMLU Tests (Generate Method)")
     print("="*80)
 
     for config in configs:
-        cmd = f"conda run -n torch python task_31_mmlu_fake_test.py {config} generate"
+        cmd = f"python task_31_mmlu_fake_test_v2.py {config}"
         description = f"MMLU Generate Test - {config}"
         if not run_command(cmd, description):
             all_success = False

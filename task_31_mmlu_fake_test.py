@@ -80,13 +80,11 @@ def compute_mmlu_accuracy_generate(model, tokenizer, num_samples=1000):
             next_token_logits = logits[0, -1, :]
             next_token = next_token_logits.argmax(dim=-1, keepdim=True)
 
-            # 解码生成的 token
+            # 解码生成的 token（与test_mmlu.py对齐）
             generated_text = tokenizer.decode(next_token[0])
-            pred = ""
-            for char in generated_text:
-                if char.upper() in "ABCD":
-                    pred = char.upper()
-                    break
+            # 与test_mmlu.py的解析逻辑对齐：pred = output["text"].strip()[0].upper()
+            generated_text = generated_text.strip()
+            pred = generated_text[0].upper() if len(generated_text) > 0 else ""
 
             if pred == true_answer:
                 correct += 1
