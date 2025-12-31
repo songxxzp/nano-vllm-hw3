@@ -1,5 +1,7 @@
 # HW4 量化实验报告
 
+代码仓库：[https://github.com/songxxzp/nano-vllm-hw3](https://github.com/songxxzp/nano-vllm-hw3)
+
 ## 1. 实验概述
 
 本实验基于 Qwen3-1.7B 模型测试不同量化方法（INT8/FP8）在不同粒度下的精度和性能。
