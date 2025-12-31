@@ -162,6 +162,150 @@ def per_row_quant(
 
 
 @torch.no_grad()
+def per_tensor_quant(
+    x: torch.Tensor, dtype: torch.dtype
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Per-tensor quantization: quantize entire tensor with single scale.
+    Returns (quantized_tensor, scale).
+    """
+    assert dtype in [torch.int8, torch.float8_e4m3fn]
+
+    if dtype == torch.int8:
+        max_val = 127
+    else:  # float8_e4m3fn
+        max_val = 448
+
+    # Compute scale for entire tensor
+    amax = x.abs().max().clamp(min=1e-8)
+    scale = amax / max_val
+
+    # Quantize
+    if dtype == torch.int8:
+        qx = (x / scale).round().clamp(-128, 127).to(dtype)
+    else:
+        qx = (x / scale).to(torch.float32).to(dtype)
+
+    return qx, scale
+
+
+@torch.no_grad()
+def per_group_quant(
+    x: torch.Tensor, group_size: int, dtype: torch.dtype
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Per-group quantization: quantize along K dimension with group_size.
+    For weight tensor [out_features, in_features], groups are along in_features.
+    Returns (quantized_tensor, scales).
+    """
+    assert dtype in [torch.int8, torch.float8_e4m3fn]
+    assert x.dim() == 2
+    assert x.size(1) % group_size == 0, f"K dim ({x.size(1)}) must be divisible by group_size ({group_size})"
+
+    if dtype == torch.int8:
+        max_val = 127
+    else:  # float8_e4m3fn
+        max_val = 448
+
+    original_shape = x.shape
+    x = x.float()  # Convert to float for computation
+
+    # Reshape to [out_features, num_groups, group_size]
+    num_groups = x.size(1) // group_size
+    x = x.reshape(x.size(0), num_groups, group_size)
+
+    # Compute scale per group
+    amax = x.abs().amax(dim=2, keepdim=True).clamp(min=1e-8)
+    scales = amax / max_val  # [out_features, num_groups, 1]
+
+    # Quantize
+    x_scaled = x / scales
+    if dtype == torch.int8:
+        x_quant = x_scaled.round().clamp(-128, 127).to(dtype)
+    else:
+        x_quant = x_scaled.to(dtype)
+
+    # Reshape back
+    qx = x_quant.reshape(original_shape)
+    sx = scales.squeeze(-1)  # [out_features, num_groups]
+
+    return qx, sx
+
+
+@torch.no_grad()
+def per_tensor_matmul(
+    x: torch.Tensor,
+    qw: torch.Tensor,
+    sw: torch.Tensor,
+    bias: torch.Tensor | None,
+    dtype: torch.dtype,
+):
+    """
+    Per-tensor quantized matrix multiplication.
+    x: [..., K] activation (can have arbitrary leading dimensions)
+    qw: [N, K] quantized weight
+    sw: scale (scalar)
+    bias: [N] or None
+    """
+    # Preserve leading dimensions
+    x_dtype = x.dtype
+    y_shape = list(x.shape)[:-1] + [qw.shape[0]]
+    x = x.view(-1, x.shape[-1])  # [M, K]
+
+    # Dequantize weight and compute
+    w = qw.to(torch.float32) * sw
+    y = (x.to(torch.float32) @ w.T).to(x_dtype)
+    if bias is not None:
+        y = y + bias
+    return y.view(y_shape)
+
+
+@torch.no_grad()
+def per_group_matmul(
+    x: torch.Tensor,
+    qw: torch.Tensor,
+    sw: torch.Tensor,
+    bias: torch.Tensor | None,
+    group_size: int,
+    dtype: torch.dtype,
+):
+    """
+    Per-group quantized matrix multiplication.
+    x: [..., K] activation (can have arbitrary leading dimensions)
+    qw: [N, K] quantized weight
+    sw: [N, num_groups] scales
+    bias: [N] or None
+    group_size: size of each group
+    """
+    x_dtype = x.dtype
+    # Preserve leading dimensions
+    y_shape = list(x.shape)[:-1] + [qw.shape[0]]
+    x = x.view(-1, x.shape[-1])  # [M, K]
+
+    M, K = x.shape
+    N = qw.shape[0]
+    num_groups = K // group_size
+
+    # Reshape for group-wise dequantization
+    # qw: [N, K] -> [N, num_groups, group_size]
+    qw_reshaped = qw.reshape(N, num_groups, group_size)
+
+    # sw: [N, num_groups] -> [N, num_groups, 1]
+    sw_reshaped = sw.unsqueeze(-1)
+
+    # Dequantize per group and compute matmul
+    w_dequant = qw_reshaped.to(torch.float32) * sw_reshaped  # [N, num_groups, group_size]
+    w_dequant = w_dequant.reshape(N, K)  # [N, K]
+
+    y = (x.to(torch.float32) @ w_dequant.T).to(x_dtype)  # [M, N]
+
+    if bias is not None:
+        y = y + bias
+
+    return y.view(y_shape)
+
+
+@torch.no_grad()
 def per_row_matmul(
     x: torch.Tensor,
     qw: torch.Tensor,
@@ -201,6 +345,7 @@ def per_row_matmul(
 
 
 class QLinear(torch.nn.Module):
+    """Per-row quantized Linear layer"""
     def __init__(self, dtype, weight: torch.Tensor, bias: torch.Tensor | None):
         super().__init__()
         assert dtype in [torch.float8_e4m3fn, torch.int8]
@@ -215,6 +360,43 @@ class QLinear(torch.nn.Module):
 
     def forward(self, x: torch.Tensor):
         return per_row_matmul(x, self.qw, self.sw, self.bias, self.dtype)
+
+
+class QTensorLinear(torch.nn.Module):
+    """Per-tensor quantized Linear layer"""
+    def __init__(self, dtype, weight: torch.Tensor, bias: torch.Tensor | None):
+        super().__init__()
+        assert dtype in [torch.float8_e4m3fn, torch.int8]
+        self.dtype = dtype
+        self.qw, self.sw = per_tensor_quant(weight, dtype)
+        self.bias = bias
+
+    @classmethod
+    def from_linear(cls, other: LinearBase, dtype):
+        assert other.tp_size == 1, "Not support TP."
+        return cls(dtype, other.weight, other.bias)
+
+    def forward(self, x: torch.Tensor):
+        return per_tensor_matmul(x, self.qw, self.sw, self.bias, self.dtype)
+
+
+class QGroupLinear(torch.nn.Module):
+    """Per-group quantized Linear layer"""
+    def __init__(self, dtype, weight: torch.Tensor, bias: torch.Tensor | None, group_size: int):
+        super().__init__()
+        assert dtype in [torch.float8_e4m3fn, torch.int8]
+        self.dtype = dtype
+        self.group_size = group_size
+        self.qw, self.sw = per_group_quant(weight, group_size, dtype)
+        self.bias = bias
+
+    @classmethod
+    def from_linear(cls, other: LinearBase, dtype, group_size: int):
+        assert other.tp_size == 1, "Not support TP."
+        return cls(dtype, other.weight, other.bias, group_size)
+
+    def forward(self, x: torch.Tensor):
+        return per_group_matmul(x, self.qw, self.sw, self.bias, self.group_size, self.dtype)
 
 
 @torch.no_grad()
@@ -277,6 +459,7 @@ def apply_weight_fake_quant(model: Qwen3ForCausalLM, weight_fake_quant_fn: lambd
 
 
 def apply_per_row_quant(model: Qwen3ForCausalLM, dtype):
+    """Apply per-row quantization to model"""
     for l in model.model.layers:
         l: Qwen3DecoderLayer
         l.self_attn.qkv_proj = QLinear.from_linear(l.self_attn.qkv_proj, dtype)
@@ -287,10 +470,55 @@ def apply_per_row_quant(model: Qwen3ForCausalLM, dtype):
     torch.cuda.empty_cache()
 
 
+def apply_tensor_quant(model: Qwen3ForCausalLM, dtype):
+    """Apply per-tensor quantization to model"""
+    for l in model.model.layers:
+        l: Qwen3DecoderLayer
+        l.self_attn.qkv_proj = QTensorLinear.from_linear(l.self_attn.qkv_proj, dtype)
+        l.self_attn.o_proj = QTensorLinear.from_linear(l.self_attn.o_proj, dtype)
+        l.mlp.gate_up_proj = QTensorLinear.from_linear(l.mlp.gate_up_proj, dtype)
+        l.mlp.down_proj = QTensorLinear.from_linear(l.mlp.down_proj, dtype)
+
+    torch.cuda.empty_cache()
+
+
+def apply_group_quant(model: Qwen3ForCausalLM, dtype, group_size: int):
+    """Apply per-group quantization to model"""
+    for l in model.model.layers:
+        l: Qwen3DecoderLayer
+        l.self_attn.qkv_proj = QGroupLinear.from_linear(l.self_attn.qkv_proj, dtype, group_size)
+        l.self_attn.o_proj = QGroupLinear.from_linear(l.self_attn.o_proj, dtype, group_size)
+        l.mlp.gate_up_proj = QGroupLinear.from_linear(l.mlp.gate_up_proj, dtype, group_size)
+        l.mlp.down_proj = QGroupLinear.from_linear(l.mlp.down_proj, dtype, group_size)
+
+    torch.cuda.empty_cache()
+
+
+def apply_weight_quant(model: Qwen3ForCausalLM, quant_fn):
+    """
+    Apply custom quantization function to all linear layer weights.
+
+    Args:
+        model: Qwen3ForCausalLM model
+        quant_fn: Function that takes a weight tensor and returns quantized tensor
+                  Should have signature: (Tensor) -> Tensor
+    """
+    for l in model.model.layers:
+        l: Qwen3DecoderLayer
+        l.self_attn.qkv_proj.weight.data = quant_fn(l.self_attn.qkv_proj.weight.data)
+        l.self_attn.o_proj.weight.data = quant_fn(l.self_attn.o_proj.weight.data)
+        l.mlp.gate_up_proj.weight.data = quant_fn(l.mlp.gate_up_proj.weight.data)
+        l.mlp.down_proj.weight.data = quant_fn(l.mlp.down_proj.weight.data)
+
+
 def test_quant_mm():
+    """Test per-row quantization"""
     shapes = [(1, 1536, 1536), (10, 1536, 1536), (4096, 4096, 4096)]
     dtypes = [torch.int8, torch.float8_e4m3fn]
     device = "cuda"
+
+    print("Testing Per-Row Quantization:")
+    print("-" * 70)
 
     for M, N, K in shapes:
         for dtype in dtypes:
@@ -311,7 +539,71 @@ def test_quant_mm():
             print(f"[{M}x{N}x{K}] {dtype_name}: q_err={q_err:.4f}, mm_err={mm_err:.4f}")
             assert mm_err < 0.08, f"Error too large: {mm_err}"
 
-    print("✓ All tests passed!")
+    print("✓ Per-row quantization tests passed!")
+
+
+def test_tensor_quant_mm():
+    """Test per-tensor quantization"""
+    shapes = [(1, 512, 512), (10, 1024, 1024), (32, 2048, 2048)]
+    dtypes = [torch.int8, torch.float8_e4m3fn]
+    device = "cuda"
+
+    print("\nTesting Per-Tensor Quantization:")
+    print("-" * 70)
+
+    for M, N, K in shapes:
+        for dtype in dtypes:
+            x = torch.randn(M, K, device=device, dtype=torch.bfloat16)
+            b = torch.randn(N, device=device, dtype=torch.bfloat16)
+
+            # Test per-tensor quantization
+            w = torch.randn(N, K, device=device, dtype=torch.bfloat16)
+            qw, sw = per_tensor_quant(w, dtype)
+
+            # Test matmul
+            y = per_tensor_matmul(x, qw, sw, b, dtype)
+            y_ref = x @ w.T + b[None, :]
+            mm_err = (y - y_ref).abs().max() / (y_ref.abs().max() + 1e-8)
+
+            dtype_name = "int8" if dtype == torch.int8 else "fp8"
+            print(f"[{M}x{N}x{K}] {dtype_name}: mm_err={mm_err:.4f}")
+            assert mm_err < 0.1, f"Error too large: {mm_err}"
+
+    print("✓ Per-tensor quantization tests passed!")
+
+
+def test_group_quant_mm():
+    """Test per-group quantization"""
+    shapes = [(1, 512, 512), (10, 1024, 1024)]
+    group_sizes = [64, 128, 256]
+    dtypes = [torch.int8, torch.float8_e4m3fn]
+    device = "cuda"
+
+    print("\nTesting Per-Group Quantization:")
+    print("-" * 70)
+
+    for M, N, K in shapes:
+        for group_size in group_sizes:
+            if K % group_size != 0:
+                continue
+            for dtype in dtypes:
+                x = torch.randn(M, K, device=device, dtype=torch.bfloat16)
+                b = torch.randn(N, device=device, dtype=torch.bfloat16)
+
+                # Test per-group quantization
+                w = torch.randn(N, K, device=device, dtype=torch.bfloat16)
+                qw, sw = per_group_quant(w, group_size, dtype)
+
+                # Test matmul
+                y = per_group_matmul(x, qw, sw, b, group_size, dtype)
+                y_ref = x @ w.T + b[None, :]
+                mm_err = (y - y_ref).abs().max() / (y_ref.abs().max() + 1e-8)
+
+                dtype_name = "int8" if dtype == torch.int8 else "fp8"
+                print(f"[{M}x{N}x{K}] {dtype_name} group={group_size}: mm_err={mm_err:.4f}")
+                assert mm_err < 0.1, f"Error too large: {mm_err}"
+
+    print("✓ Per-group quantization tests passed!")
 
 
 def test_fake_quant():
@@ -350,6 +642,15 @@ def test_fake_quant():
 
 
 if __name__ == "__main__":
+    print("=" * 80)
+    print("Running Quantization Tests")
+    print("=" * 80)
+
     test_quant_mm()
-    print()
+    test_tensor_quant_mm()
+    test_group_quant_mm()
     test_fake_quant()
+
+    print("\n" + "=" * 80)
+    print("✓ All tests passed successfully!")
+    print("=" * 80)
